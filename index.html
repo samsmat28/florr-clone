@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Petal Arena</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #1b1e2b; font-family: system-ui, sans-serif; }
+    canvas { display: block; }
+    #hud { position: fixed; left: 16px; top: 12px; color: white; text-shadow: 0 2px 3px #000; pointer-events: none; }
+    #level { font-size: 22px; font-weight: 800; }
+    #xpBar { width: 220px; height: 14px; margin-top: 5px; border: 3px solid #172028; border-radius: 10px; background: #303746; overflow: hidden; }
+    #xpFill { width: 0%; height: 100%; background: #61dc9a; }
+    #upgrade { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(15, 18, 28, .72); z-index: 5; }
+    #upgrade.open { display: flex; }
+    .cardWrap { display: flex; gap: 14px; }
+    .card { width: 170px; padding: 18px 12px; border: 0; border-radius: 16px; background: #f7f2df; color: #20232c; cursor: pointer; box-shadow: 0 8px 24px #0008; text-align: center; }
+    .card:hover { transform: translateY(-5px); background: white; }
+    .card b { display: block; margin: 10px 0 5px; }
+    .icon { display: grid; place-items: center; width: 78px; height: 78px; margin: auto; border: 7px solid #fff; border-radius: 50%; box-shadow: 0 3px 0 #0002, 0 0 0 2px #6e6e6e; background: #ff8fbd; font-size: 36px; }
+    #gameOver { position: fixed; inset: 0; display: none; place-items: center; background: rgba(12, 14, 22, .82); color: white; z-index: 10; }
+    #gameOver.open { display: grid; }
+    .panel { text-align: center; }
+    #restart { border: 0; border-radius: 10px; padding: 12px 22px; background: #61dc9a; color: #142219; font-size: 18px; font-weight: 800; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="hud"><div id="level">Level 1</div><div id="xpBar"><div id="xpFill"></div></div></div>
+  <div id="upgrade"><div class="cardWrap" id="cards"></div></div>
+  <div id="gameOver"><div class="panel"><h1>Game Over</h1><p id="score"></p><button id="restart">Play Again</button></div></div>
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const xpFill = document.getElementById('xpFill');
+    const levelText = document.getElementById('level');
+    const upgrade = document.getElementById('upgrade');
+    const cards = document.getElementById('cards');
+    const gameOver = document.getElementById('gameOver');
+
+    let width, height, player, enemies, particles, orbs, keys, mouse, camera, time, paused, score;
+
+    function resize() {
+      width = canvas.width = innerWidth * devicePixelRatio;
+      height = canvas.height = innerHeight * devicePixelRatio;
+      canvas.style.width = innerWidth + 'px';
+      canvas.style.height = innerHeight + 'px';
+      ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+      width = innerWidth; height = innerHeight;
+    }
+    addEventListener('resize', resize);
+
+    function reset() {
+      player = { x: 0, y: 0, radius: 25, speed: 220, health: 100, maxHealth: 100, level: 1, xp: 0, nextXp: 30, angle: 0, petalCount: 3, invincible: 0, shootCooldown: 0 };
+      enemies = []; particles = []; orbs = [];
+      keys = {}; mouse = { x: 0, y: 0, down: false }; camera = { x: 0, y: 0 }; time = 0; paused = false; score = 0;
+      for (let i = 0; i < 10; i++) spawnEnemy(true);
+      gameOver.classList.remove('open');
+    }
+
+    function spawnEnemy(offscreen = false) {
+      const angle = Math.random() * Math.PI * 2;
+      const distance = offscreen ? 350 + Math.random() * 500 : 500 + Math.random() * 400;
+      const roll = Math.random();
+      const type = roll < .7 ? 'ladybug' : roll < .9 ? 'beetle' : 'rock';
+      const stats = type === 'rock'
+        ? { radius: 28, speed: 38, health: 110, damage: 18, color: '#9a927f', xp: 20 }
+        : type === 'beetle'
+        ? { radius: 22, speed: 64, health: 70, damage: 14, color: '#6873a5', xp: 14 }
+        : { radius: 18, speed: 88, health: 38, damage: 10, color: '#f04d57', xp: 9 };
+      enemies.push({ x: player.x + Math.cos(angle) * distance, y: player.y + Math.sin(angle) * distance, ...stats, maxHealth: stats.health, phase: Math.random() * 6 });
+    }
+
+    function burst(x, y, color, count = 12) {
+      for (let i = 0; i < count; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 40 + Math.random() * 130;
+        particles.push({ x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, life: .35 + Math.random() * .4, color });
+      }
+    }
+
+    function addXp(amount) {
+      player.xp += amount;
+      while (player.xp >= player.nextXp) {
+        player.xp -= player.nextXp;
+        player.level++;
+        player.nextXp = Math.floor(player.nextXp * 1.25);
+        openUpgrade();
+      }
+    }
+
+    const upgrades = [
+      { name: 'More Petals', icon: '✿', color: '#ff79b0', apply: () => player.petalCount = Math.min(8, player.petalCount + 1) },
+      { name: 'Fast Petals', icon: '⚡', color: '#ffd35c', apply: () => player.speed += 35 },
+      { name: 'Max Health', icon: '♥', color: '#66cf88', apply: () => { player.maxHealth += 25; player.health = player.maxHealth; } },
+      { name: 'Repair', icon: '➕', color: '#64c9e8', apply: () => player.health = Math.min(player.maxHealth, player.health + player.maxHealth * .5) }
+    ];
+
+    function openUpgrade() {
+      paused = true;
+      cards.innerHTML = '';
+      const choices = [...upgrades].sort(() => Math.random() - .5).slice(0, 3);
+      for (const upgradeChoice of choices) {
+        const button = document.createElement('button');
+        button.className = 'card';
+        button.innerHTML = `<div class="icon" style="background:${upgradeChoice.color}">${upgradeChoice.icon}</div><b>${upgradeChoice.name}</b>`;
+        button.onclick = () => { upgradeChoice.apply(); upgrade.classList.remove('open'); paused = false; };
+        cards.appendChild(button);
+      }
+      upgrade.classList.add('open');
+    }
+
+    function update(dt) {
+      if (paused) return;
+      time += dt;
+      let dx = 0, dy = 0;
+      if (keys.KeyA || keys.ArrowLeft) dx--;
+      if (keys.KeyD || keys.ArrowRight) dx++;
+      if (keys.KeyW || keys.ArrowUp) dy--;
+      if (keys.KeyS || keys.ArrowDown) dy++;
+      if (dx || dy) { const length = Math.hypot(dx, dy); player.x += dx / length * player.speed * dt; player.y += dy / length * player.speed * dt; }
+
+      player.angle += dt * 2.4;
+      player.invincible = Math.max(0, player.invincible - dt);
+      camera.x += (player.x - camera.x) * Math.min(1, dt * 6);
+      camera.y += (player.y - camera.y) * Math.min(1, dt * 6);
+
+      if (enemies.length < 12 + player.level * 2 && Math.random() < dt * 1.8) spawnEnemy(true);
+
+      const petals = [];
+      for (let i = 0; i < player.petalCount; i++) {
+        const angle = player.angle + i / player.petalCount * Math.PI * 2;
+        petals.push({ x: player.x + Math.cos(angle) * 58, y: player.y + Math.sin(angle) * 58, radius: 11 });
+      }
+
+      for (let i = enemies.length - 1; i >= 0; i--) {
+        const enemy = enemies[i];
+        const ex = player.x - enemy.x, ey = player.y - enemy.y;
+        const distance = Math.hypot(ex, ey) || 1;
+        enemy.phase += dt;
+        enemy.x += ex / distance * enemy.speed * dt;
+        enemy.y += ey / distance * enemy.speed * dt;
+
+        for (let j = 0; j < petals.length; j++) {
+          const petal = petals[j];
+          if (Math.hypot(petal.x - enemy.x, petal.y - enemy.y) < petal.radius + enemy.radius) {
+            enemy.health -= dt * 35;
+            enemy.x -= ex / distance * 18 * dt;
+            enemy.y -= ey / distance * 18 * dt;
+            if (Math.random() < dt * 8) burst(petal.x, petal.y, '#ffd1df', 1);
+          }
+        }
+
+        if (distance < player.radius + enemy.radius && player.invincible <= 0) {
+          player.health -= enemy.damage;
+          player.invincible = .65;
+          burst(player.x, player.y, '#f5f5f5', 8);
+          if (player.health <= 0) endGame();
+        }
+
+        if (enemy.health <= 0) {
+          burst(enemy.x, enemy.y, enemy.color, 18);
+          orbs.push({ x: enemy.x, y: enemy.y, radius: 7, xp: enemy.xp });
+          enemies.splice(i, 1);
+          score += 10;
+        }
+      }
+
+      for (let i = orbs.length - 1; i >= 0; i--) {
+        const orb = orbs[i];
+        const ox = player.x - orb.x, oy = player.y - orb.y;
+        const distance = Math.hypot(ox, oy);
+        if (distance < 150) { orb.x += ox / (distance || 1) * 270 * dt; orb.y += oy / (distance || 1) * 270 * dt; }
+        if (distance < player.radius + orb.radius) { addXp(orb.xp); orbs.splice(i, 1); }
+      }
+
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i]; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= .96; p.vy *= .96; p.life -= dt;
+        if (p.life <= 0) particles.splice(i, 1);
+      }
+
+      xpFill.style.width = `${Math.min(100, player.xp / player.nextXp * 100)}%`;
+      levelText.textContent = `Level ${player.level}`;
+    }
+
+    function endGame() {
+      paused = true;
+      document.getElementById('score').textContent = `Score: ${score} • Level: ${player.level}`;
+      gameOver.classList.add('open');
+    }
+
+    function circle(x, y, radius, fill, stroke = null, lineWidth = 2) {
+      ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fillStyle = fill; ctx.fill();
+      if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lineWidth; ctx.stroke(); }
+    }
+
+    function drawGrid() {
+      ctx.fillStyle = '#78bd62'; ctx.fillRect(0, 0, width, height);
+      ctx.fillStyle = 'rgba(255,255,255,.16)';
+      const grid = 80;
+      const ox = -(camera.x % grid); const oy = -(camera.y % grid);
+      for (let x = ox - grid; x < width + grid; x += grid) ctx.fillRect(x, 0, 1, height);
+      for (let y = oy - grid; y < height + grid; y += grid) ctx.fillRect(0, y, width, 1);
+    }
+
+    function drawWorld() {
+      ctx.save(); ctx.translate(width / 2 - camera.x, height / 2 - camera.y);
+
+      for (const orb of orbs) {
+        ctx.shadowBlur = 12; ctx.shadowColor = '#73e6ff';
+        circle(orb.x, orb.y, orb.radius, '#62bfe3', '#efffff', 2); ctx.shadowBlur = 0;
+      }
+
+      for (const enemy of enemies) {
+        circle(enemy.x, enemy.y, enemy.radius, enemy.color, '#3e3e3e', 4);
+        if (enemy.type === 'rock') circle(enemy.x - 7, enemy.y - 6, 5, '#c7c0ab');
+        if (enemy.health < enemy.maxHealth) {
+          ctx.fillStyle = '#30323b'; ctx.fillRect(enemy.x - 25, enemy.y - enemy.radius - 14, 50, 7);
+          ctx.fillStyle = '#ef6171'; ctx.fillRect(enemy.x - 25, enemy.y - enemy.radius - 14, 50 * Math.max(0, enemy.health / enemy.maxHealth), 7);
+        }
+      }
+
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i]; ctx.globalAlpha = Math.min(1, p.life * 3); circle(p.x, p.y, 3, p.color);
+      }
+      ctx.globalAlpha = 1;
+
+      for (let i = 0; i < player.petalCount; i++) {
+        const angle = player.angle + i / player.petalCount * Math.PI * 2;
+        const px = player.x + Math.cos(angle) * 58, py = player.y + Math.sin(angle) * 58;
+        ctx.save(); ctx.translate(px, py); ctx.rotate(angle); ctx.beginPath(); ctx.ellipse(0, 0, 18, 10, 0, 0, Math.PI * 2); ctx.fillStyle = '#ffb3cf'; ctx.fill(); ctx.strokeStyle = '#a84d73'; ctx.lineWidth = 3; ctx.stroke(); ctx.restore();
+      }
+
+      if (player.invincible <= 0 || Math.floor(time * 15) % 2 === 0) {
+        circle(player.x, player.y, player.radius, '#f7f2de', '#5b4d46', 5);
+        circle(player.x - 8, player.y - 4, 3, '#3a3a3a'); circle(player.x + 8, player.y - 4, 3, '#3a3a3a');
+        ctx.beginPath(); ctx.arc(player.x, player.y + 4, 7, 0, Math.PI); ctx.strokeStyle = '#6a4d4d'; ctx.lineWidth = 2; ctx.stroke();
+      }
+
+      if (player.health < player.maxHealth) {
+        ctx.fillStyle = '#30323b'; ctx.fillRect(player.x - 38, player.y - 42, 76, 8);
+        ctx.fillStyle = '#ef6171'; ctx.fillRect(player.x - 38, player.y - 42, 76 * player.health / player.maxHealth, 8);
+      }
+      ctx.restore();
+    }
+
+    function frame(timestamp) {
+      if (!frame.last) frame.last = timestamp;
+      const dt = Math.min(.033, (timestamp - frame.last) / 1000); frame.last = timestamp;
+      update(dt); drawGrid(); drawWorld(); requestAnimationFrame(frame);
+    }
+
+    addEventListener('keydown', event => keys[event.code] = true);
+    addEventListener('keyup', event => keys[event.code] = false);
+    canvas.addEventListener('mousemove', event => { mouse.x = event.clientX; mouse.y = event.clientY; });
+    canvas.addEventListener('mousedown', () => mouse.down = true);
+    canvas.addEventListener('mouseup', () => mouse.down = false);
+    document.getElementById('restart').onclick = () => { reset(); frame.last = performance.now(); };
+
+    resize(); reset(); requestAnimationFrame(frame);
+  </script>
+</body>
+</html>
